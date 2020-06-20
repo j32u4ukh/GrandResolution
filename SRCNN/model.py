@@ -1,35 +1,31 @@
-from datetime import datetime
 import os
 import time
+from datetime import datetime
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from skimage import metrics
 
-from SRCNN.utils import (
-    PSNRLoss,
-    read_data,
-    inputSetup_,
-    inputSetup,
-    readData,
-    imsave,
-    merge,
-    mergeImages
-)
-from OpenEyes.utils import (
-    showImage,
-    showImages
-)
-from OpenEyes.loss import (
-    tf_ssim,
+import torch
+import torch.nn as nn
+from torch.utils import data
+
+from GrandResolution.loss import (
     tf_ssim4,
     ssim3
 )
+from GrandResolution.utils import (
+    showImage
+)
+from SRCNN.srcnn import (
+    inputSetup,
+    readData,
+    mergeImages
+)
 
 
-class SRCNN:
+class TfSrcnn:
     def __init__(self,
                  epoch=100,
                  image_size=32,
@@ -44,6 +40,7 @@ class SRCNN:
         # 嘗試將 SRCNN 的建立移至 tf.Session() 之外，事後定義 sess
         # self.sess = sess
         self.sess = None
+
         self.epoch = epoch
         self.is_grayscale = (c_dim == 1)
         self.image_size = image_size
@@ -82,6 +79,8 @@ class SRCNN:
         self.sess = _sess
 
     def build_model(self):
+        # 先對低分辨率圖像(LR)進行雙三次插值(Bicubic Interpolation)處理，得到和高分辨率圖像"一樣大小的圖像"作為輸入圖像
+        # 即 image_size == label_size，其實應該用同一個變數就好，更可清楚理解兩者為同一數值
         # images[i].shape = (None, image_size, image_size, c_dim)
         self.images = tf.placeholder(dtype=tf.float32,
                                      shape=[None, self.image_size, self.image_size, self.c_dim],
@@ -126,6 +125,8 @@ class SRCNN:
         # self.loss = metrics.structural_similarity(self.labels, self.pred, data_range=255)
         one = tf.constant(1.0)
         self.total_loss, self.each_loss = tf_ssim4(self.labels, self.pred, is_normalized=True)
+
+        # 雖然命名 total_loss 但應該是 ssim 的得分，因此 1 - total_loss 才是模型誤差
         self.loss = tf.subtract(one, self.total_loss)
 
         # 建立 saver 物件
@@ -166,15 +167,15 @@ class SRCNN:
         # input_setup(config)
         # TypeError: cannot unpack non-iterable NoneType object
         if not is_data_prepared:
-            arr_data, arr_label, (nx, ny) = inputSetup(_is_train=True,
-                                                       _image_size=self.image_size,
-                                                       _label_size=self.label_size,
-                                                       _scale=self.scale,
-                                                       _stride=self.stride)
+            arr_data, arr_label, (nx, ny) = inputSetup(is_training=True,
+                                                       image_size=self.image_size,
+                                                       label_size=self.label_size,
+                                                       scale=self.scale,
+                                                       stride=self.stride)
         # data_dir = os.path.join('./{}'.format(self.checkpoint_dir), "train.h5")
 
-        # 將圖片子集合讀取進來
-        train_data, train_label = readData("Train")
+        # 將圖片子集合讀取進來 readData(idx, image_size, scale, stride)
+        train_data, train_label = readData(-1, self.image_size, self.scale, self.stride)
 
         # Stochastic gradient descent with the standard backpropagation
         self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
@@ -267,12 +268,13 @@ class SRCNN:
 
     # predict 不需要初始化步驟 init= tf.initialize_all_variables()
     def predict(self):
+        # TODO: is_data_prepared 若測試數據不存在才執行
         # input_setup:將訓練或測試資料產生並保存到 checkpoint 資料夾下的 XXX.h5
-        arr_data, arr_label, (nx, ny) = inputSetup(_is_train=False,
-                                                   _image_size=self.image_size,
-                                                   _label_size=self.label_size,
-                                                   _scale=self.scale,
-                                                   _stride=self.stride)
+        arr_data, arr_label, (nx, ny) = inputSetup(is_training=False,
+                                                   image_size=self.image_size,
+                                                   label_size=self.label_size,
+                                                   scale=self.scale,
+                                                   stride=self.stride)
         # print("nx: {}, ny: {}".format(nx, ny))
 
         # 將圖片子集合讀取進來
@@ -449,6 +451,41 @@ class SRCNN:
         return ckpt
 
 
+class PtSrcnn(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self):
+        pass
+
+
+class SrcnnDataLoader(data.Dataset):
+    def __init__(self, idx, image_size, scale, stride, is_gray=False):
+        self.image_size = image_size
+        self.scale = scale
+        self.stride = stride
+        if is_gray:
+            self.c_dim = 1
+        else:
+            self.c_dim = 3
+
+        if idx == -1:
+            self.input_data, self.label_data = readData(idx, self.image_size, self.scale, self.stride)
+        else:
+            self.input_data, self.label_data, (self.nx, self.ny) = readData(idx,
+                                                                            self.image_size,
+                                                                            self.scale,
+                                                                            self.stride)
+
+    def __getitem__(self, index):
+        input_data = torch.from_numpy(self.input_data[index]).float()
+        label_data = torch.from_numpy(self.label_data[index]).float()
+        return input_data, label_data
+
+    def __len__(self):
+        return len(self.input_data)
+
+
 if __name__ == "__main__":
     # https://github.com/tegg89/SRCNN-Tensorflow
     epoch = 25
@@ -466,17 +503,20 @@ if __name__ == "__main__":
 
     tf.reset_default_graph()
     tf_config = tf.ConfigProto(log_device_placement=True)
+
+    # 限制 GPU 使用量
     tf_config.gpu_options.per_process_gpu_memory_fraction = 0.8
-    srcnn = SRCNN(epoch=epoch,
-                  image_size=image_size,
-                  label_size=label_size,
-                  learning_rate=learning_rate,
-                  batch_size=batch_size,
-                  c_dim=c_dim,
-                  scale=scale,
-                  stride=stride,
-                  checkpoint_dir=checkpoint_dir,
-                  sample_dir=sample_dir)
+
+    srcnn = TfSrcnn(epoch=epoch,
+                    image_size=image_size,
+                    label_size=label_size,
+                    learning_rate=learning_rate,
+                    batch_size=batch_size,
+                    c_dim=c_dim,
+                    scale=scale,
+                    stride=stride,
+                    checkpoint_dir=checkpoint_dir,
+                    sample_dir=sample_dir)
 
     with tf.Session(config=tf_config) as sess:
         srcnn.setSess(sess)
