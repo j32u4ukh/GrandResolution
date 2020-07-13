@@ -1,6 +1,5 @@
 import glob
 import os
-import sys
 
 import cv2
 import h5py
@@ -9,15 +8,12 @@ import scipy.misc
 import scipy.ndimage
 from keras import backend as K
 
-from GrandResolution.utils import (
+from submodule.Xu3.utils import getFuncName
+from utils import (
     info,
-    showImage,
-    showImages,
     biBubicInterpolation,
     biBubicInterpolation2
 )
-
-from Xu3.utils import getFuncName
 
 
 # region setupInput
@@ -30,7 +26,7 @@ def readData(idx, image_size, scale, stride, is_gray=False):
     :param scale: 放大比例，也用於產生輸入數據
     :param stride: 拆分步長
     :param is_gray: 是否為灰階圖片
-    :return:
+    :return: input_data, label_data, (nx, ny) 最後兩項為測試數據獨有，訓練數據沒有這兩項
     """
     # 若為訓練集
     if idx == -1:
@@ -49,7 +45,11 @@ def readData(idx, image_size, scale, stride, is_gray=False):
 
     # 沒有事先生成的數據，生成並返回
     input_data, label_data, (nx, ny) = setupInput(idx, image_size, scale, stride, is_gray)
-    return input_data, label_data, (nx, ny)
+
+    if idx == -1:
+        return input_data, label_data
+    else:
+        return input_data, label_data, (nx, ny)
 
 
 # inputSetup:將訓練或測試資料產生並保存到 checkpoint 資料夾下的 XXX.h5
@@ -146,6 +146,8 @@ def subData(data, scale, image_size, stride, is_gray=False):
 
 def differentResolution(path, is_gray=False, scale=3):
     """
+    將圖片縮小再放大，以獲得大小相同但解析度下降的圖片
+
     1. Read original image
     2. Normalize
     3. Apply image file with bicubic interpolation
@@ -226,6 +228,7 @@ def makeData(data, label, is_gray=False):
 # endregion
 
 
+# 用於將測試數據拼接回原圖大小
 def mergeImages(images, stride, n_size):
     patch_height, patch_width, channel = images[0].shape
     n_height, n_width = n_size
@@ -574,4 +577,3 @@ if __name__ == "__main__":
 
     # arr_data, arr_label, (nx, ny) = inputSetup(is_train, image_size, label_size, scale, stride)
     # data, label = readData("Train")
-

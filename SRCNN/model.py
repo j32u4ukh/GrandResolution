@@ -5,23 +5,24 @@ from datetime import datetime
 import cv2
 import numpy as np
 import tensorflow as tf
-from skimage import metrics
-
 import torch
 import torch.nn as nn
-from torch.utils import data
+from skimage import metrics
+import torch.utils.data as Data
 
-from GrandResolution.loss import (
-    tf_ssim4,
-    ssim3
-)
-from GrandResolution.utils import (
-    showImage
-)
 from SRCNN.srcnn import (
     inputSetup,
     readData,
     mergeImages
+)
+from loss import (
+    tf_ssim4,
+    ssim3,
+    PyTorchLoss
+)
+from submodule.Xu3.network import printNetwork
+from utils import (
+    showImage
 )
 
 
@@ -133,7 +134,7 @@ class TfSrcnn:
         """如果你希望每2小時保存一次模型，並且只保存最近的5個模型文件：
         tf.train.Saver(max_to_keep=5, keep_checkpoint_every_n_hours=2)
         注意：tensorflow默認只會保存最近的5個模型文件，如果你希望保存更多，可以通過max_to_keep來指定
-        
+
         如果我們不對tf.train.Saver指定任何參數，默認會保存所有變量。
         如果你不想保存所有變量，而只保存一部分變量，可以通過指定variables/collections。
         在創建tf.train.Saver實例時，通過將需要保存的變量構造list或者dictionary，傳入到Saver中。
@@ -267,7 +268,7 @@ class TfSrcnn:
         # print("=" * 30)
 
     # predict 不需要初始化步驟 init= tf.initialize_all_variables()
-    def predict(self):
+    def predict(self, idx):
         # TODO: is_data_prepared 若測試數據不存在才執行
         # input_setup:將訓練或測試資料產生並保存到 checkpoint 資料夾下的 XXX.h5
         arr_data, arr_label, (nx, ny) = inputSetup(is_training=False,
@@ -279,7 +280,8 @@ class TfSrcnn:
 
         # 將圖片子集合讀取進來
         # data_dir = os.path.join('./{}'.format(config.checkpoint_dir), "test.h5")
-        _data, _label = readData("Test")
+        # readData(idx, image_size, scale, stride, is_gray)
+        _data, _label = readData(idx=idx, image_size=self.image_size, scale=self.scale, stride=self.stride)
         # print("data: {}, label:{}".format(_data.shape, _label.shape))
 
         # 若有之前的訓練模型，則載入
@@ -332,7 +334,7 @@ class TfSrcnn:
 
         error = metrics.structural_similarity(origin,
                                               squeeze_result,
-                                              data_range=origin.max()-origin.min(),
+                                              data_range=origin.max() - origin.min(),
                                               multichannel=multichannel)
         print("metrics error:", 1 - error)
 
@@ -362,7 +364,7 @@ class TfSrcnn:
         """Tensorflow的模型儲存時有幾點需要注意：
         1、利用tf.train.write_graph()預設情況下只匯出了網路的定義（沒有權重weight）。
         2、利用tf.train.Saver().save()匯出的檔案graph_def與權重是分離的。
-        
+
         我們知道，graph_def檔案中沒有包含網路中的Variable值（通常情況儲存了權重），但是卻包含了constant值，
         所以如果我們能把Variable轉換為constant，即可達到使用一個檔案同時儲存網路架構與權重的目標"""
         self.saver.save(self.sess,
@@ -451,15 +453,140 @@ class TfSrcnn:
         return ckpt
 
 
+class SRCNN:
+    def __init__(self, image_size, scale, stride, lr, batch_size, model_save_step, resume_iters=0, is_gray=False):
+        """
+
+        :param image_size: 圖片大小，輸入輸出大小相同，僅解析度不同
+        :param scale: 放大比例，也用於產生輸入數據
+        :param stride: 拆分步長
+        :param lr: 學習率
+        :param batch_size: 批次訓練大小
+        :param model_save_step: 訓練幾次，儲存一次模型
+        :param resume_iters:
+        :param is_gray:
+        """
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.image_size = image_size
+        self.scale = scale
+        self.stride = stride
+        if is_gray:
+            self.c_dim = 1
+        else:
+            self.c_dim = 3
+
+        # torch.optim.Adam
+        self.lr = lr
+        self.beta1 = 0.9
+        self.beta2 = 0.999
+        self.optimizer = torch.optim.Adam(self.ps.parameters(), self.lr, (self.beta1, self.beta2))
+
+        # model
+        self.ps = PtSrcnn(c_dim)
+        self.ps = self.ps.to(self.device)
+        self.batch_size = batch_size
+        self.model_save_dir = "SRCNN/checkpoint"
+        self.model_save_step = model_save_step
+        self.resume_iters = resume_iters
+        self.loss = []
+
+    def train(self, n_iter=100):
+        dataset = SrcnnDataset(-1, self.image_size, self.scale, self.stride, self.is_gray)
+
+        # 把 dataset 放入 DataLoader
+        loader = Data.DataLoader(
+            dataset=dataset,  # torch TensorDataset format
+            batch_size=self.batch_size,  # mini batch size
+            shuffle=True,  # 要不要打亂數據 (打亂比較好)
+            num_workers=2,  # 多線程來讀數據
+        )
+
+        data_iter = iter(loader)
+
+        # 若有保留上次運行次數指標，則恢復模型，從上次訓練的輪次繼續訓練
+        last_iter = 0
+        if self.resume_iters:
+            last_iter = self.resume_iters
+            self.restore_model(self.resume_iters)
+        # endregion
+
+        for i in range(n_iter):
+            index = i + last_iter
+            print("Round:", index)
+
+            try:
+                input_data, label_data = next(data_iter)
+                # input_data.shape: torch.Size([64, 32, 32, 3])
+                # label_data.shape: torch.Size([64, 32, 32, 3])
+                # print("input_data.shape:", input_data.shape)
+                # print("label_data.shape:", label_data.shape)
+            except StopIteration:
+                data_iter = iter(loader)
+                input_data, label_data = next(data_iter)
+
+            # 大小相同但解析度下降的圖片
+            input_data = input_data.to(self.device).requires_grad_(True)
+
+            # 原始圖片
+            label_data = label_data.to(self.device).requires_grad_(True)
+
+            # 利用 PtSrcnn 產生解析度較高的圖片: output
+            output = self.ps(input_data)
+
+            loss = PyTorchLoss.ssim4(label_data, output, is_normalized=True)
+            self.loss.append(loss.item())
+
+            # 歸零累積的梯度
+            self.optimizer.zero_grad()
+            loss.backward()
+
+            # 更新 discriminator 的參數
+            self.optimizer.step()
+
+            # Save model checkpoints. 保存訓練途中的模型，之後可根據訓練的輪次，再接著繼續訓練
+            if (index + 1) % self.model_save_step == 0:
+                path = os.path.join(self.model_save_dir, 'PtSrcnn-{}.ckpt'.format(index + 1))
+                torch.save(self.ps.state_dict(), path)
+                print('Saved model checkpoints into {}...'.format(self.model_save_dir))
+
+            break
+
+    # TODO: 模型可儲存，若已有儲存過的檔案，則將模型載入
+    def restoreModel(self, resume_iters):
+        """Restore the trained generator and discriminator."""
+        print('Loading the trained models from step {}...'.format(resume_iters))
+
+        # 根據訓練次數，形成數據檔案名稱
+        path_g = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(resume_iters))
+
+        # 匯入之前訓練到一半的模型
+        self.G.load_state_dict(torch.load(path_g, map_location=lambda storage, loc: storage))
+        self.D.load_state_dict(torch.load(path_d, map_location=lambda storage, loc: storage))
+
+
 class PtSrcnn(nn.Module):
-    def __init__(self):
+    def __init__(self, c_dim):
         super().__init__()
+        self.c_dim = c_dim
 
-    def forward(self):
-        pass
+        # 'SAME' padding = (kernel_size - 1) / 2
+        self.conv1 = nn.Conv2d(self.c_dim, 64, kernel_size=9, stride=1, padding=4, bias=True)
+        self.relu1 = nn.ReLU()
+        self.layer1 = None
+        self.conv2 = nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0, bias=True)
+        self.relu2 = nn.ReLU()
+        self.layer2 = None
+        self.conv3 = nn.Conv2d(32, self.c_dim, kernel_size=5, stride=1, padding=2, bias=True)
+        self.relu3 = nn.ReLU()
+
+    def forward(self, x):
+        self.layer1 = self.relu1(self.conv1(x))
+        self.layer2 = self.relu2(self.conv2(self.layer1))
+        output = self.relu3(self.conv3(self.layer2))
+        return output
 
 
-class SrcnnDataLoader(data.Dataset):
+class SrcnnDataset(Data.Dataset):
     def __init__(self, idx, image_size, scale, stride, is_gray=False):
         self.image_size = image_size
         self.scale = scale
@@ -469,13 +596,16 @@ class SrcnnDataLoader(data.Dataset):
         else:
             self.c_dim = 3
 
+        # readData(idx, image_size, scale, stride, is_gray=False)
+        # image_size: 圖片大小，輸入輸出大小相同，僅解析度不同
         if idx == -1:
-            self.input_data, self.label_data = readData(idx, self.image_size, self.scale, self.stride)
+            self.input_data, self.label_data = readData(idx, self.image_size, self.scale, self.stride, is_gray=is_gray)
         else:
             self.input_data, self.label_data, (self.nx, self.ny) = readData(idx,
                                                                             self.image_size,
                                                                             self.scale,
-                                                                            self.stride)
+                                                                            self.stride,
+                                                                            is_gray=is_gray)
 
     def __getitem__(self, index):
         input_data = torch.from_numpy(self.input_data[index]).float()
@@ -487,49 +617,89 @@ class SrcnnDataLoader(data.Dataset):
 
 
 if __name__ == "__main__":
-    # https://github.com/tegg89/SRCNN-Tensorflow
-    epoch = 25
-    batch_size = 64
-    image_size = 32
-    label_size = 32
-    learning_rate = 1e-5
-    c_dim = 3
-    scale = 3
-    stride = 16
-    checkpoint_dir = "checkpoint"
-    sample_dir = "result"
-    # is_train = True
-    history = None
+    def testTfSrcnn():
+        # https://github.com/tegg89/SRCNN-Tensorflow
+        epoch = 25
+        batch_size = 64
+        learning_rate = 1e-5
 
-    tf.reset_default_graph()
-    tf_config = tf.ConfigProto(log_device_placement=True)
+        image_size = 32
+        label_size = 32
+        c_dim = 3
+        scale = 3
+        stride = 16
 
-    # 限制 GPU 使用量
-    tf_config.gpu_options.per_process_gpu_memory_fraction = 0.8
+        checkpoint_dir = "checkpoint"
+        sample_dir = "result"
+        # is_train = True
+        history = None
 
-    srcnn = TfSrcnn(epoch=epoch,
-                    image_size=image_size,
-                    label_size=label_size,
-                    learning_rate=learning_rate,
-                    batch_size=batch_size,
-                    c_dim=c_dim,
-                    scale=scale,
-                    stride=stride,
-                    checkpoint_dir=checkpoint_dir,
-                    sample_dir=sample_dir)
+        tf.reset_default_graph()
+        tf_config = tf.ConfigProto(log_device_placement=True)
 
-    with tf.Session(config=tf_config) as sess:
-        srcnn.setSess(sess)
+        # 限制 GPU 使用量
+        tf_config.gpu_options.per_process_gpu_memory_fraction = 0.8
 
-        # print(srcnn.load())
-        # srcnn.load2()
-        # srcnn.train()
+        srcnn = TfSrcnn(epoch=epoch,
+                        image_size=image_size,
+                        label_size=label_size,
+                        learning_rate=learning_rate,
+                        batch_size=batch_size,
+                        c_dim=c_dim,
+                        scale=scale,
+                        stride=stride,
+                        checkpoint_dir=checkpoint_dir,
+                        sample_dir=sample_dir)
 
-        # print(srcnn.load())
-        data, result, merged_result, squeeze_result = srcnn.predict()
-        # print("sess size:", sess.__sizeof__())
-        # print("graph size:", sess.graph.__sizeof__())
+        with tf.Session(config=tf_config) as sess:
+            srcnn.setSess(sess)
 
-    # x = [i for i in range(len(srcnn.training_history))]
-    # plt.plot(x, srcnn.training_history)
-    # plt.show()
+            # print(srcnn.load())
+            # srcnn.load2()
+            # srcnn.train()
+
+            # print(srcnn.load())
+            data, result, merged_result, squeeze_result = srcnn.predict(1)
+            # print("sess size:", sess.__sizeof__())
+            # print("graph size:", sess.graph.__sizeof__())
+
+        # x = [i for i in range(len(srcnn.training_history))]
+        # plt.plot(x, srcnn.training_history)
+        # plt.show()
+
+    def testSrcnnDataset():
+        idx = -1
+        image_size = 32
+        scale = 3
+        stride = 16
+        is_gray = False
+        dataset = SrcnnDataset(idx=idx, image_size=image_size, scale=scale, stride=stride, is_gray=is_gray)
+        BATCH_SIZE = 64
+
+        # 把 dataset 放入 DataLoader
+        loader = Data.DataLoader(
+            dataset=dataset,  # torch TensorDataset format
+            batch_size=BATCH_SIZE,  # mini batch size
+            shuffle=True,           # 要不要打亂數據 (打亂比較好)
+            num_workers=2,          # 多線程來讀數據
+        )
+
+        for index, (input_data, label_data) in enumerate(loader):
+            # input_data.shape: torch.Size([64, 32, 32, 3])
+            # label_data.shape: torch.Size([64, 32, 32, 3])
+            print("input_data.shape:", input_data.shape)
+            print("label_data.shape:", label_data.shape)
+            break
+
+    def testPtSrcnn():
+        matrix = np.random.rand(1, 3, 30, 30)
+        print("matrix:", matrix.shape)
+        ps = PtSrcnn(3)
+        mat = torch.from_numpy(matrix)
+        mat = mat.float()
+        y = ps(mat)
+        print("y:", y.shape)
+        printNetwork(ps, "PtSrcnn")
+
+    # testSrcnnDataset()
+    testPtSrcnn()

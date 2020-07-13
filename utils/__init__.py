@@ -1,11 +1,9 @@
-import math
-
 import cv2
 import numpy as np
 import scipy.ndimage
-from matplotlib import pyplot as plt
 import seaborn as sns
 from keras.utils import np_utils
+from matplotlib import pyplot as plt
 
 
 def preprocess(data, label):

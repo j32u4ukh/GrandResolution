@@ -16,86 +16,12 @@
 
 # c 為圖片的通道數。
 """
-import numpy as np
-import torch.nn as nn
-import torch
-from GrandResolution.SRCNN.srcnn import (
-    inputSetup,
-    readData,
-    mergeImages
-)
-from GrandResolution.utils import (
-    showImage
-)
-from Xu3.network import printNetwork
 
 
-class SRCNN:
-    def __init__(self, image_size, scale, stride, lr, is_gray=False):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.image_size = image_size
-        self.scale = scale
-        self.stride = stride
-        if is_gray:
-            self.c_dim = 1
-        else:
-            self.c_dim = 3
-
-        self.data_loader = None
-        self.ps = PtSrcnn(c_dim)
-        self.ps.to(self.device)
-
-        # torch.optim.Adam
-        self.lr = lr
-        self.beta1 = 0.9
-        self.beta2 = 0.999
-        self.optimizer = torch.optim.Adam(self.ps.parameters(), self.lr, (self.beta1, self.beta2))
-
-    def train(self):
-        self.data_loader = SrcnnDataLoader(-1, self.image_size, self.scale, self.stride, self.is_gray)
-
-    # TODO: 模型可儲存，若已有儲存過的檔案，則將模型載入
-    def restore_model(self, resume_iters):
-        """Restore the trained generator and discriminator."""
-        print('Loading the trained models from step {}...'.format(resume_iters))
-
-        # 根據訓練次數，形成數據檔案名稱
-        path_g = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(resume_iters))
-        path_d = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(resume_iters))
-
-        # 匯入之前訓練到一半的模型
-        self.G.load_state_dict(torch.load(path_g, map_location=lambda storage, loc: storage))
-        self.D.load_state_dict(torch.load(path_d, map_location=lambda storage, loc: storage))
-
-
-class PtSrcnn(nn.Module):
-    def __init__(self, c_dim):
-        super().__init__()
-        self.c_dim = c_dim
-
-        # 'SAME' padding = (kernel_size - 1) / 2
-        self.conv1 = nn.Conv2d(self.c_dim, 64, kernel_size=9, stride=1, padding=4, bias=True)
-        self.relu1 = nn.ReLU()
-        self.layer1 = None
-        self.conv2 = nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0, bias=True)
-        self.relu2 = nn.ReLU()
-        self.layer2 = None
-        self.conv3 = nn.Conv2d(32, self.c_dim, kernel_size=5, stride=1, padding=2, bias=True)
-        self.relu3 = nn.ReLU()
-
-    def forward(self, x):
-        self.layer1 = self.relu1(self.conv1(x))
-        self.layer2 = self.relu2(self.conv2(self.layer1))
-        output = self.relu3(self.conv3(self.layer2))
-        return output
+def main():
+    # TODO: 主要提供命令列使用，但還是更希望可以在"命令列"與"直接使用程式碼"之間無痛轉換
+    pass
 
 
 if __name__ == "__main__":
-    matrix = np.random.rand(1, 3, 30, 30)
-    print("matrix:", matrix.shape)
-    ps = PtSrcnn(3)
-    mat = torch.from_numpy(matrix)
-    mat = mat.float()
-    y = ps(mat)
-    print("y:", y.shape)
-    # printNetwork(ps, "PtSrcnn")
+    main()

@@ -14,10 +14,10 @@ from tensorflow.math import (
     reduce_std as tf_std
 )
 
-from GrandResolution.utils import (
+from utils import (
     showImage
 )
-from GrandResolution.utils.math import (
+from utils.math import (
     log,
     multiOperation
 )
@@ -371,4 +371,6 @@ if __name__ == "__main__":
     print("ssim4:", ssim4(images, dsts, is_normalized=True))
 
     # PyTorch.ssim4: tensor(0.9589, dtype=torch.float64)
-    print("PyTorch.ssim4:", PyTorchLoss.ssim4(pt_images, pt_dsts, is_normalized=True))
+    pt_dsts = pt_dsts.requires_grad_(True)
+    ssim4_loss = PyTorchLoss.ssim4(pt_images, pt_dsts, is_normalized=True)
+    print("PyTorch.ssim4:", ssim4_loss)
