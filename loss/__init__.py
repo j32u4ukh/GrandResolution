@@ -55,8 +55,8 @@ class PyTorchLoss:
 
     @staticmethod
     def ssim3(x, y, is_normalized=True):
-        xr, xg, xb = torch.split(x, 1, dim=2)
-        yr, yg, yb = torch.split(y, 1, dim=2)
+        xr, xg, xb = torch.split(x, 1, dim=0)
+        yr, yg, yb = torch.split(y, 1, dim=0)
 
         r = PyTorchLoss.ssim(xr, yr, is_normalized)
         g = PyTorchLoss.ssim(xg, yg, is_normalized)
@@ -292,8 +292,8 @@ if __name__ == "__main__":
                                              feed_dict={x: img_x,
                                                         y: img_y})
 
-            print("total_loss:", total_loss)  # total_loss: 0.9589584
-            print("each_loss:", each_loss)    # each_loss: [0.9515831  0.9512937  0.9634177  0.96953887]
+            print("total_loss:", total_loss)  # total_loss: 0.9782068
+            print("each_loss:", each_loss)    # each_loss: [0.9740695  0.97524875 0.98075956 0.98274946]
 
     # ================================================================================
     img1 = cv2.imread("data/splice1.png")
@@ -308,7 +308,7 @@ if __name__ == "__main__":
         img = images[i] / 255.0
         # INTER_CUBIC = cv2.resize(_img, (_resize_cols, _resize_rows), interpolation=cv2.INTER_CUBIC)
         images[i] = cv2.resize(img, (256, 256), interpolation=cv2.INTER_CUBIC)
-        dst = cv2.GaussianBlur(images[i].copy(), (13, 13), 0)
+        dst = cv2.GaussianBlur(images[i].copy(), (5, 5), 0)
         dsts.append(dst)
 
     images = np.array(images)
@@ -321,31 +321,34 @@ if __name__ == "__main__":
     loss2 = ssim(images[1], dsts[1], is_normalized=True)
     loss3 = ssim(images[2], dsts[2], is_normalized=True)
     loss4 = ssim(images[3], dsts[3], is_normalized=True)
-    print("ssim loss1:", loss1)  # ssim loss1: 0.9530896078865423
-    print("ssim loss2:", loss2)  # ssim loss2: 0.951598205259678
-    print("ssim loss3:", loss3)  # ssim loss3: 0.9694566425946143
-    print("ssim loss4:", loss4)  # ssim loss4: 0.9750622058576149
-    # ssim total loss: 0.9623016653996124
+    print("ssim loss1:", loss1)  # ssim loss1: 0.9748280551931702
+    print("ssim loss2:", loss2)  # ssim loss2: 0.9754028104752155
+    print("ssim loss3:", loss3)  # ssim loss3: 0.9837840687997413
+    print("ssim loss4:", loss4)  # ssim loss4: 0.9857441547142608
+    # ssim total loss: 0.979939772295597
     print("ssim total loss:", np.mean([loss1, loss2, loss3, loss4]))
 
     pt_images = torch.from_numpy(images)
+    pt_images = pt_images.permute(0, 3, 1, 2)  # pt_images.shape = torch.Size([4, 3, 256, 256])
     pt_dsts = torch.from_numpy(dsts)
+    pt_dsts = pt_dsts.permute(0, 3, 1, 2)  # pt_dsts.shape = torch.Size([4, 3, 256, 256])
 
     pt_image1 = pt_images[0]
-    result = torch.split(pt_image1, 1, dim=2)
+    print("pt_image1.shape:", pt_image1.shape)  # torch.Size([3, 256, 256])
+    result = torch.split(pt_image1, 1, dim=0)
 
     pt_loss1 = PyTorchLoss.ssim(pt_images[0], pt_dsts[0], is_normalized=True)
-    print("pt_loss1:", pt_loss1)  # pt_loss1: tensor(0.9531, dtype=torch.float64)
+    print("pt_loss1:", pt_loss1)  # pt_loss1: tensor(0.9748, dtype=torch.float64)
     pt_loss2 = PyTorchLoss.ssim(pt_images[1], pt_dsts[1], is_normalized=True)
-    print("pt_loss2:", pt_loss2)  # pt_loss2: tensor(0.9516, dtype=torch.float64)
+    print("pt_loss2:", pt_loss2)  # pt_loss2: tensor(0.9754, dtype=torch.float64)
     pt_loss3 = PyTorchLoss.ssim(pt_images[2], pt_dsts[2], is_normalized=True)
-    print("pt_loss3:", pt_loss3)  # pt_loss3: tensor(0.9695, dtype=torch.float64)
+    print("pt_loss3:", pt_loss3)  # pt_loss3: tensor(0.9838, dtype=torch.float64)
     pt_loss4 = PyTorchLoss.ssim(pt_images[3], pt_dsts[3], is_normalized=True)
-    print("pt_loss4:", pt_loss4)  # pt_loss4: tensor(0.9751, dtype=torch.float64)
-    # pt_total_loss: tensor(0.9623, dtype=torch.float64)
+    print("pt_loss4:", pt_loss4)  # pt_loss4: tensor(0.9857, dtype=torch.float64)
+    # pt_total_loss: tensor(0.9851, dtype=torch.float64)
     pt_total_loss = torch.mean(torch.tensor([pt_loss1, pt_loss2, pt_loss3, pt_loss4]))
     pt_loss = PyTorchLoss.ssim(torch.from_numpy(images), torch.from_numpy(dsts), is_normalized=True)
-    print("pt_loss:", pt_loss)  # pt_loss: tensor(0.9531, dtype=torch.float64)
+    print("pt_loss:", pt_loss)  # pt_loss: tensor(0.9851, dtype=torch.float64)
 
     """
     上面會將圖片的三個通道"共同"計算 ssim 值
@@ -356,7 +359,7 @@ if __name__ == "__main__":
     for img, dst in zip(pt_images, pt_dsts):
         pt_ssim3_loss += PyTorchLoss.ssim3(img, dst, is_normalized=True)
     pt_ssim3_loss /= pt_images.shape[0]
-    # pt_ssim3_loss: 0.9589
+    # pt_ssim3_loss: 0.9782
     print("pt_ssim3_loss:", pt_ssim3_loss)
 
     ssim3_loss = 0
@@ -364,13 +367,13 @@ if __name__ == "__main__":
         ssim3_loss += ssim3(img, dst, is_normalized=True)
     ssim3_loss /= len(images)
 
-    # ssim3_loss: 0.9589583362703996
+    # ssim3_loss: 0.9782067609078682
     print("ssim3_loss:", ssim3_loss)
 
-    # ssim4: (0.9589583362703996, array([0.95158301, 0.95129378, 0.96341769, 0.96953887]))
+    # ssim4: (0.9782067609078682, array([0.97406934, 0.97524874, 0.9807595 , 0.98274946]))
     print("ssim4:", ssim4(images, dsts, is_normalized=True))
 
-    # PyTorch.ssim4: tensor(0.9589, dtype=torch.float64)
+    # PyTorch.ssim4: tensor(0.9782, dtype=torch.float64)
     pt_dsts = pt_dsts.requires_grad_(True)
     ssim4_loss = PyTorchLoss.ssim4(pt_images, pt_dsts, is_normalized=True)
     print("PyTorch.ssim4:", ssim4_loss)

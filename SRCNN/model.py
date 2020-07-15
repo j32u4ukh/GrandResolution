@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from skimage import metrics
 import torch.utils.data as Data
+from matplotlib import pyplot as plt
 
 from SRCNN.srcnn import (
     inputSetup,
@@ -454,7 +455,8 @@ class TfSrcnn:
 
 
 class SRCNN:
-    def __init__(self, image_size, scale, stride, lr, batch_size, model_save_step, resume_iters=0, is_gray=False):
+    def __init__(self, image_size, scale, stride, lr,
+                 batch_size, model_save_step, resume_iters=0, is_gray=False):
         """
 
         :param image_size: 圖片大小，輸入輸出大小相同，僅解析度不同
@@ -463,17 +465,28 @@ class SRCNN:
         :param lr: 學習率
         :param batch_size: 批次訓練大小
         :param model_save_step: 訓練幾次，儲存一次模型
-        :param resume_iters:
-        :param is_gray:
+        :param resume_iters: 累計訓練次數
+        :param is_gray: 是否為灰階圖片
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.image_size = image_size
         self.scale = scale
         self.stride = stride
+        self.is_gray = is_gray
         if is_gray:
             self.c_dim = 1
         else:
             self.c_dim = 3
+
+        # model
+        self.ps = PtSrcnn(self.c_dim)
+        self.ps = self.ps.to(self.device)
+        self.batch_size = batch_size
+        self.model_save_dir = "SRCNN/checkpoint"
+        self.model_save_step = model_save_step
+        self.resume_iters = resume_iters
+        self.accuracy = []
+        self.loss = []
 
         # torch.optim.Adam
         self.lr = lr
@@ -481,38 +494,20 @@ class SRCNN:
         self.beta2 = 0.999
         self.optimizer = torch.optim.Adam(self.ps.parameters(), self.lr, (self.beta1, self.beta2))
 
-        # model
-        self.ps = PtSrcnn(c_dim)
-        self.ps = self.ps.to(self.device)
-        self.batch_size = batch_size
-        self.model_save_dir = "SRCNN/checkpoint"
-        self.model_save_step = model_save_step
-        self.resume_iters = resume_iters
-        self.loss = []
-
     def train(self, n_iter=100):
-        dataset = SrcnnDataset(-1, self.image_size, self.scale, self.stride, self.is_gray)
-
-        # 把 dataset 放入 DataLoader
-        loader = Data.DataLoader(
-            dataset=dataset,  # torch TensorDataset format
-            batch_size=self.batch_size,  # mini batch size
-            shuffle=True,  # 要不要打亂數據 (打亂比較好)
-            num_workers=2,  # 多線程來讀數據
-        )
-
-        data_iter = iter(loader)
+        data_iter = self.createDataIter(idx=-1, batch_size=self.batch_size)
 
         # 若有保留上次運行次數指標，則恢復模型，從上次訓練的輪次繼續訓練
         last_iter = 0
         if self.resume_iters:
             last_iter = self.resume_iters
-            self.restore_model(self.resume_iters)
+            self.restoreModel(self.resume_iters)
         # endregion
 
+        last_loss = 10000
         for i in range(n_iter):
             index = i + last_iter
-            print("Round:", index)
+            print("[SRCNN] train | Round:", index)
 
             try:
                 input_data, label_data = next(data_iter)
@@ -533,8 +528,13 @@ class SRCNN:
             # 利用 PtSrcnn 產生解析度較高的圖片: output
             output = self.ps(input_data)
 
-            loss = PyTorchLoss.ssim4(label_data, output, is_normalized=True)
-            self.loss.append(loss.item())
+            # 計算誤差
+            acc = PyTorchLoss.ssim4(label_data, output, is_normalized=True)
+            self.accuracy.append(acc)
+            loss = 1 - acc
+            loss_value = loss.item()
+            print(f"[SRCNN] train | loss_value: {loss_value}")
+            self.loss.append(loss_value)
 
             # 歸零累積的梯度
             self.optimizer.zero_grad()
@@ -544,24 +544,100 @@ class SRCNN:
             self.optimizer.step()
 
             # Save model checkpoints. 保存訓練途中的模型，之後可根據訓練的輪次，再接著繼續訓練
-            if (index + 1) % self.model_save_step == 0:
+            if (index + 1) % self.model_save_step == 0 and loss_value < last_loss:
+                print(f"[SRCNN] train | loss_value: {loss_value} < last_loss: {last_loss}")
+                last_loss = loss_value
                 path = os.path.join(self.model_save_dir, 'PtSrcnn-{}.ckpt'.format(index + 1))
                 torch.save(self.ps.state_dict(), path)
                 print('Saved model checkpoints into {}...'.format(self.model_save_dir))
 
-            break
+    def predict(self, idx):
+        data_iter = self.createDataIter(idx=idx, shuffle=False)
+        self.restoreModel(self.resume_iters)
 
-    # TODO: 模型可儲存，若已有儲存過的檔案，則將模型載入
+        with torch.no_grad():
+            input_data, label_data, (nx, ny) = next(data_iter)
+
+            # 利用 PtSrcnn 產生解析度較高的圖片: output
+            output = self.ps(input_data)
+            print("output.shape:", output.shape)
+
+            result = output * 255
+            result = np.uint8(result)
+            result = np.clip(result, 0, 255)
+            print("result.shape:", result.shape)
+
+            # 將預測圖片子集合，彙整成一張圖片
+            merged_result = mergeImages(result, self.stride, [nx, ny])
+            print("merged result.shape:", merged_result.shape)
+
+            # numpy squeeze:將陣列 shape 中為1的維度，例如>> (1,1,10) → (10,)
+            squeeze_result = merged_result.squeeze()
+            print("squeezed result.shape:", squeeze_result.shape)
+
+            origin_data = np.uint8(label_data * 255)
+            origin_data = np.clip(origin_data, 0, 255)
+            origin = mergeImages(origin_data, self.stride, [nx, ny])
+            origin = origin.squeeze()
+
+            multichannel = squeeze_result.ndim == 3
+            if not multichannel:
+                origin = cv2.cvtColor(origin, cv2.COLOR_BGR2GRAY)
+
+            print("origin.shape:", origin.shape)
+
+            sim = metrics.structural_similarity(origin,
+                                                squeeze_result,
+                                                data_range=origin.max() - origin.min(),
+                                                multichannel=multichannel)
+            print("metrics error:", 1 - sim)
+
+            # 計算誤差
+            loss = 1 - PyTorchLoss.ssim4(label_data, output, is_normalized=True)
+            print("Loss:", loss.item())
+
+            file_name = datetime.now().strftime("%Y%m%d%H%M%S")
+            image_path = os.path.join(os.getcwd(), "SRCNN", "result", "{}.png".format(file_name))
+            print("image_path:", image_path)
+
+            cv2.imwrite(image_path, squeeze_result)
+            showImage(squeeze_result)
+
+            return origin, result, merged_result, squeeze_result
+
+    def createDataIter(self, idx=-1, batch_size=None, shuffle=True):
+        dataset = SrcnnDataset(idx, self.image_size, self.scale, self.stride, self.is_gray)
+
+        # 若 batch_size 為 None，則輸出大小設為整個 dataset，特別為測試功能設計
+        if batch_size is None:
+            batch_size = len(dataset)
+
+        print(f"[SRCNN] createDataIter | batch_size: {batch_size}, #dataset: {len(dataset)}")
+
+        # 把 dataset 放入 DataLoader
+        loader = Data.DataLoader(
+            dataset=dataset,  # torch TensorDataset format
+            batch_size=batch_size,  # mini batch size
+            shuffle=shuffle,  # 要不要打亂數據 (打亂比較好)
+            num_workers=2,  # 多線程來讀數據
+        )
+
+        return iter(loader)
+
     def restoreModel(self, resume_iters):
-        """Restore the trained generator and discriminator."""
+        """
+        模型可儲存，若已有儲存過的檔案，則將模型載入
+
+        :param resume_iters: 累計訓練次數，作為檔名來辨別訓練次數
+        :return:
+        """
         print('Loading the trained models from step {}...'.format(resume_iters))
 
         # 根據訓練次數，形成數據檔案名稱
-        path_g = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(resume_iters))
+        path = os.path.join(self.model_save_dir, 'PtSrcnn-{}.ckpt'.format(resume_iters))
 
         # 匯入之前訓練到一半的模型
-        self.G.load_state_dict(torch.load(path_g, map_location=lambda storage, loc: storage))
-        self.D.load_state_dict(torch.load(path_d, map_location=lambda storage, loc: storage))
+        self.ps.load_state_dict(torch.load(path, map_location=lambda storage, loc: storage))
 
 
 class PtSrcnn(nn.Module):
@@ -591,10 +667,10 @@ class SrcnnDataset(Data.Dataset):
         self.image_size = image_size
         self.scale = scale
         self.stride = stride
-        if is_gray:
-            self.c_dim = 1
-        else:
-            self.c_dim = 3
+        # if is_gray:
+        #     self.c_dim = 1
+        # else:
+        #     self.c_dim = 3
 
         # readData(idx, image_size, scale, stride, is_gray=False)
         # image_size: 圖片大小，輸入輸出大小相同，僅解析度不同
@@ -609,7 +685,13 @@ class SrcnnDataset(Data.Dataset):
 
     def __getitem__(self, index):
         input_data = torch.from_numpy(self.input_data[index]).float()
+        # from HWC to CHW
+        input_data = input_data.permute(2, 0, 1)
+
         label_data = torch.from_numpy(self.label_data[index]).float()
+        # from HWC to CHW
+        label_data = label_data.permute(2, 0, 1)
+
         return input_data, label_data
 
     def __len__(self):
@@ -668,13 +750,35 @@ if __name__ == "__main__":
         # plt.show()
 
     def testSrcnnDataset():
-        idx = -1
+        idx = 3
         image_size = 32
         scale = 3
         stride = 16
         is_gray = False
         dataset = SrcnnDataset(idx=idx, image_size=image_size, scale=scale, stride=stride, is_gray=is_gray)
-        BATCH_SIZE = 64
+
+        print("#dataset:", len(dataset))
+        for index, (input_data, label_data) in enumerate(dataset):
+            # 已經 from NHWC to NCHW
+            # input_data.shape: torch.Size([64, 3, 32, 32])
+            # label_data.shape: torch.Size([64, 3, 32, 32])
+            print("input_data.shape:", input_data.shape)
+            print("label_data.shape:", label_data.shape)
+            np_input_data = np.array(input_data)
+            print(f"input_data range: {np.min(np_input_data)} ~ {np.max(np_input_data)}")
+            np_label_data = np.array(label_data)
+            print(f"label_data range: {np.min(np_label_data)} ~ {np.max(np_label_data)}")
+            break
+
+    def testSrcnnDataLoader():
+        idx = 3
+        image_size = 32
+        scale = 3
+        stride = 16
+        is_gray = False
+        dataset = SrcnnDataset(idx=idx, image_size=image_size, scale=scale, stride=stride, is_gray=is_gray)
+        # BATCH_SIZE = len(dataset)
+        BATCH_SIZE = 20
 
         # 把 dataset 放入 DataLoader
         loader = Data.DataLoader(
@@ -685,14 +789,15 @@ if __name__ == "__main__":
         )
 
         for index, (input_data, label_data) in enumerate(loader):
-            # input_data.shape: torch.Size([64, 32, 32, 3])
-            # label_data.shape: torch.Size([64, 32, 32, 3])
+            # 已經 from NHWC to NCHW
+            # input_data.shape: torch.Size([64, 3, 32, 32])
+            # label_data.shape: torch.Size([64, 3, 32, 32])
             print("input_data.shape:", input_data.shape)
             print("label_data.shape:", label_data.shape)
-            break
+            return input_data, label_data
 
     def testPtSrcnn():
-        matrix = np.random.rand(1, 3, 30, 30)
+        matrix = np.random.rand(40, 3, 30, 30)
         print("matrix:", matrix.shape)
         ps = PtSrcnn(3)
         mat = torch.from_numpy(matrix)
@@ -701,5 +806,33 @@ if __name__ == "__main__":
         print("y:", y.shape)
         printNetwork(ps, "PtSrcnn")
 
+
     # testSrcnnDataset()
-    testPtSrcnn()
+    # testSrcnnDataLoader()
+    # testPtSrcnn()
+
+    # image_size, scale, stride, lr, batch_size, model_save_step, resume_iters=0, is_gray
+    image_size = 32
+    scale = 3
+    stride = 16
+    lr = 0.01
+    batch_size = 64
+    model_save_step = 10
+    resume_iters = 0
+    is_gray = False
+    srcnn = SRCNN(image_size=image_size,
+                  scale=scale,
+                  stride=stride,
+                  lr=lr,
+                  batch_size=batch_size,
+                  model_save_step=model_save_step,
+                  resume_iters=resume_iters,
+                  is_gray=is_gray)
+    srcnn.train(n_iter=50)
+    accuracy_history = srcnn.accuracy
+    loss_history = srcnn.loss
+    x_axis = list(range(len(loss_history)))
+    plt.plot(x_axis, accuracy_history, label="accuracy")
+    plt.plot(x_axis, loss_history, label="loss")
+    plt.legend(loc="best")
+    plt.show()
