@@ -15,6 +15,8 @@ from utils import (
     biBubicInterpolation2
 )
 
+from utils import showImages
+
 
 # region setupInput
 # 載入數據
@@ -101,6 +103,7 @@ def prepareData(dataset="Train", idx=0):
             idx = 0
 
         # type -> list
+        print("prepareData | file name:", files[idx])
         return files[idx: idx + 1]
 
 
@@ -160,8 +163,12 @@ def differentResolution(path, is_gray=False, scale=3):
     # 讀取原始圖片
     img = imRead(path, is_gray)
 
+    print("differentResolution | 原始圖片 shape:", img.shape)
+
     # modcrop:裁減原始圖片，使之為 scale 的倍數，方便後面做縮放
     label_data = modCrop(img, scale)
+
+    print("differentResolution | 裁減圖片 shape:", label_data.shape)
 
     # 將原圖縮小 scale 倍
     small_img = biBubicInterpolation(label_data, (1. / scale))
@@ -230,14 +237,18 @@ def makeData(data, label, is_gray=False):
 
 # 用於將測試數據拼接回原圖大小
 def mergeImages(images, stride, n_size):
-    patch_height, patch_width, channel = images[0].shape
+    # shape: C, H, W
+    channel, patch_height, patch_width = images[0].shape
+    print("mergeImages | images[0].shape:", images[0].shape)
+
     n_height, n_width = n_size
+    print(f"mergeImages | n_height: {n_height}, n_width: {n_width}")
 
     height = patch_height + (n_height - 1) * stride
     width = patch_width + (n_width - 1) * stride
+    print(f"height:{height}, width:{width}")
 
-    print("height:{}, width:{}".format(height, _width))
-    dst = np.zeros((height, width, channel))
+    dst = np.zeros((channel, height, width))
 
     idx = -1
     for h in range(0, height - patch_height + 2, stride):
@@ -245,7 +256,7 @@ def mergeImages(images, stride, n_size):
             idx += 1
             # 由於 patch_height, patch_width 與 stride 不相等，因此會產生重疊的部分，
             # 這裡直接將後面的區塊蓋在前面的區塊之上
-            dst[h: h + patch_height, w: w + patch_width, :] = images[idx] * 255
+            dst[:, h: h + patch_height, w: w + patch_width] = images[idx] * 255
 
     dst = np.clip(dst, 0, 255)
     return np.uint8(dst)
@@ -567,13 +578,8 @@ if __name__ == "__main__":
     # subData(data, scale, image_size, stride, is_gray=False)
     # sub_input_sequence, sub_label_sequence, (nx, ny) = subData(files, scale, image_size, stride, is_gray=False)
     # input_data, label_data, _ = setupInput(idx=-1, image_size=image_size, scale=scale, stride=stride)
-    input_data, label_data = readData(idx=-1, image_size=image_size, scale=scale, stride=stride)
+    input_data, label_data, (nx, ny) = readData(idx=1, image_size=image_size, scale=scale, stride=stride)
+    result = mergeImages(input_data, stride, (nx, ny))
+    origin = mergeImages(label_data, stride, (nx, ny))
 
-    # sub_input_sequence, sub_label_sequence, (nx, ny) = subData2([files[0]],
-    #                                                             scale,
-    #                                                             image_size,
-    #                                                             label_size,
-    #                                                             stride)
-
-    # arr_data, arr_label, (nx, ny) = inputSetup(is_train, image_size, label_size, scale, stride)
-    # data, label = readData("Train")
+    showImages(origin=origin, result=result)
