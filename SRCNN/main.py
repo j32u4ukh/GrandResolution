@@ -17,10 +17,54 @@
 # c 為圖片的通道數。
 """
 
+import argparse
+from SRCNN.model import SRCNN
+
 
 def main():
-    # TODO: 主要提供命令列使用，但還是更希望可以在"命令列"與"直接使用程式碼"之間無痛轉換
-    pass
+    # 主要提供命令列使用，但還是更希望可以在"命令列"與"直接使用程式碼"之間無痛轉換
+    parser = argparse.ArgumentParser()
+
+    # parser.add_argument('--c_dim', type=int, default=5, help='dimension of domain labels (1st dataset)')
+    """
+    image_size = 32
+    scale = 3
+    stride = 16
+    lr = 0.01
+    batch_size = 64
+    model_save_step = 10
+    resume_iters = 150
+    is_gray = False
+    idx=33
+    """
+    parser.add_argument("-size", type=int, default=32, help="切割用於訓練的圖片大小")
+    parser.add_argument("-scale", type=int, default=3, help="放大倍數")
+    parser.add_argument("-stride", type=int, default=32, help="卷積濾波器步長")
+    parser.add_argument("-lr", type=float, default=0.01, help="學習率")
+    parser.add_argument("-batch", type=int, default=64, help="每一次訓練的批次大小")
+    parser.add_argument("-save", type=int, default=10, help="每訓練幾次儲存一次模型")
+    parser.add_argument("-iters", type=int, default=0, help="累積訓練次數，用於載入之前儲存的模型以接續訓練")
+    parser.add_argument("-gray", type=bool, default=False, help="是否為灰階圖片")
+    parser.add_argument("-workers", type=int, default=0, help="使用核心數，超過 0 必須使用 Run 來執行，且須在 __main__ 當中"
+                                                              "，但讀取數據較有效率")
+    parser.add_argument("-idx", type=int, default=-1, help="測試圖片索引值，若為 -1 表示使用訓練集")
+    parser.add_argument("-store", type=bool, default=False, help="是否儲存圖片")
+    config = parser.parse_args()
+
+    srcnn = SRCNN(image_size=config.size,
+                  scale=config.scale,
+                  stride=config.stride,
+                  lr=config.lr,
+                  batch_size=config.batch,
+                  model_save_step=config.save,
+                  resume_iters=config.iters,
+                  is_gray=config.gray,
+                  n_workers=config.workers)
+
+    if config.idx == -1:
+        srcnn.train(n_iter=config.iters)
+    else:
+        srcnn.predict(idx=config.idx, save_image=config.store)
 
 
 if __name__ == "__main__":

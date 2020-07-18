@@ -4,13 +4,13 @@ import tensorflow as tf
 
 parser = argparse.ArgumentParser(description="Up-Scales an image using Image Super Resolution Model")
 parser.add_argument("imgpath", type=str, nargs="+", help="Path to input image")
-parser.add_argument("--model", type=str, default="distilled_rnsr", help="Use either image super resolution (sr), "
-                        "expanded super resolution (esr), denoising auto encoder sr (dsr), "
-                        "deep denoising sr (ddsr) or res net sr (rnsr)")
+parser.add_argument("--model", type=str, default="distilled_rnsr",
+                    help="Use either image super resolution (sr), expanded super resolution (esr), "
+                         "denoising auto encoder sr (dsr), deep denoising sr (ddsr) or res net sr (rnsr)")
 parser.add_argument("--scale", default=2, help='Scaling factor. Default = 2x')
 parser.add_argument("--mode", default="patch", type=str, help='Mode of operation. Choices are "fast" or "patch"')
 parser.add_argument("--save_intermediate", dest='save', default='True', type=str,
-                        help="Whether to save bilinear upscaled image")
+                    help="Whether to save bilinear upscaled image")
 parser.add_argument("--suffix", default="scaled", type=str, help='Suffix of saved image')
 parser.add_argument("--patch_size", type=int, default=8, help='Patch Size')
 
